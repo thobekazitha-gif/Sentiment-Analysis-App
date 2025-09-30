@@ -1,7 +1,6 @@
 import streamlit as st
 from transformers import pipeline
 import matplotlib.pyplot as plt
-import base64
  
 # Load Hugging Face sentiment analysis pipeline
 sentiment_pipeline = pipeline("sentiment-analysis")
@@ -9,35 +8,28 @@ sentiment_pipeline = pipeline("sentiment-analysis")
 # ---------------------- Styling ----------------------
 st.set_page_config(page_title="Sentiment Insights", layout="wide")
  
-page_bg = """
+page_style = """
 <style>
 [data-testid="stAppViewContainer"] {
     background-color: #0e0d0d;
-    background-image: url("https://images.unsplash.com/photo-1504674900247-0877df9cc836?auto=format&fit=crop&w=1600&q=80"),
-                      url("https://images.unsplash.com/photo-1502877338535-766e1452684a?auto=format&fit=crop&w=1600&q=80"),
-                      url("https://images.unsplash.com/photo-1525609004556-c46c7d6cf023?auto=format&fit=crop&w=1600&q=80"),
-                      url("https://images.unsplash.com/photo-1549924231-f129b911e442?auto=format&fit=crop&w=1600&q=80");
-    background-size: cover;
-    background-position: center;
-    background-attachment: fixed;
     color: #ffffff;
 }
 h1, h2, h3, h4, h5, h6, p {
     color: #f2f2f2;
 }
 .block-container {
-    background: rgba(20, 20, 20, 0.7);
+    background: rgba(20, 20, 20, 0.85);
     padding: 2rem;
     border-radius: 12px;
 }
 </style>
 """
-st.markdown(page_bg, unsafe_allow_html=True)
+st.markdown(page_style, unsafe_allow_html=True)
  
 # ---------------------- App Title ----------------------
 st.title("Sentiment Insights")
 st.subheader("Understand reviews for any business — restaurants, retail, dealerships, and more.")
-st.markdown("Powered by **Logic League** | Gain instant insights from customer reviews using AI.")
+st.markdown("🚀 Powered by **Logic League** | Gain instant insights from customer reviews using AI.")
  
 # ---------------------- Inputs ----------------------
 with st.container():
@@ -54,7 +46,7 @@ if st.button("Analyze Reviews"):
     if business_name.strip() == "" or reviews_input.strip() == "":
         st.error("⚠️ Please enter a business name and at least one review.")
     else:
-        reviews = reviews_input.split("\n")
+        reviews = [r.strip() for r in reviews_input.split("\n") if r.strip()]
         results = sentiment_pipeline(reviews)
  
         # Sentiment counters
@@ -100,5 +92,5 @@ if st.button("Analyze Reviews"):
         # ---------------------- Detailed Table ----------------------
         st.markdown("### Detailed Review Insights")
         for rev, lab, sc in detailed_results:
-            color = "green" if lab == "POSITIVE" else "red" if lab == "NEGATIVE" else "yellow"
-            st.markdown(f"- **{lab} ({sc})** → {rev}")
+            color = "🟢" if lab == "POSITIVE" else "🔴" if lab == "NEGATIVE" else "🟡"
+            st.markdown(f"- {color} **{lab} ({sc})** → {rev}")
