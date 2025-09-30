@@ -250,7 +250,7 @@ elif page == "Input":
                 expl, drivers = explain_text(t, sent, keywords)
                 # Top label and score
                 top_label = max(("positive", sent["positive"]), ("neutral", sent["neutral"]), ("negative", sent["negative"]), key=lambda x: x[1])
-    rows.append({
+                rows.append({
                     "Text": t,
                     "Positive": sent["positive"],
                     "Neutral": sent["neutral"],
