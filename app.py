@@ -7,10 +7,13 @@ import requests
 import pandas as pd
  
 # -----------------------------
-# Download NLTK resources
+# Ensure NLTK resources exist
 # -----------------------------
-nltk.download('punkt')
-nltk.download('stopwords')
+for resource in ["tokenizers/punkt", "corpora/stopwords"]:
+    try:
+        nltk.data.find(resource)
+    except LookupError:
+        nltk.download(resource.split("/")[1])
  
 # -----------------------------
 # Hugging Face API Setup
@@ -32,10 +35,10 @@ def analyze_sentiment_hf(text):
         return sentiments
     except Exception as e:
         st.warning(f"Hugging Face API failed: {e}")
-        return None
+        return {"positive": 0.0, "neutral": 1.0, "negative": 0.0}
  
 def analyze_sentiment_local(text):
-    # Simple local rule-based sentiment as fallback
+    # Simple rule-based fallback
     positive_words = ["good", "great", "love", "excellent", "happy"]
     negative_words = ["bad", "terrible", "hate", "poor", "sad"]
     text_lower = text.lower()
@@ -80,10 +83,17 @@ if texts:
         sentiments = analyze_sentiment_hf(t) if USE_HF_API else analyze_sentiment_local(t)
         # Keyword extraction
         keywords = extract_keywords(t)
-        results.append({"Text": t, "Positive": sentiments["positive"], "Neutral": sentiments["neutral"], "Negative": sentiments["negative"], "Keywords": ", ".join(keywords)})
+        results.append({
+            "Text": t,
+            "Positive": sentiments["positive"],
+            "Neutral": sentiments["neutral"],
+            "Negative": sentiments["negative"],
+            "Keywords": ", ".join(keywords)
+        })
  
     df = pd.DataFrame(results)
     st.dataframe(df)
  
     # Option to download results
     st.download_button("Download CSV", df.to_csv(index=False), file_name="sentiment_results.csv")
+ 
