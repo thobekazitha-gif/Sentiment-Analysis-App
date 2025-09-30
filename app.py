@@ -5,32 +5,60 @@ import requests
 import pandas as pd
 import re
 from collections import Counter
+import matplotlib.pyplot as plt
+ 
+# -----------------------------
+# App description
+# -----------------------------
+st.title("Sentiment Analysis Dashboard")
+st.markdown("""
+This app allows you to analyze the sentiment of text data and extract keywords.  
+**Features include:**
+- Sentiment classification: Positive, Neutral, Negative
+- Keyword extraction (without NLTK)
+- Batch processing for multiple texts
+- Download results as CSV
+- Interactive sentiment distribution chart
+- Works with Hugging Face API or local fallback if API fails
+""")
  
 # -----------------------------
 # Hugging Face API Setup
 # -----------------------------
 HF_API_TOKEN = os.getenv("HF_API_TOKEN")
 USE_HF_API = True if HF_API_TOKEN else False
- 
 HF_MODEL = "cardiffnlp/twitter-roberta-base-sentiment"
 HF_API_URL = f"https://api-inference.huggingface.co/models/{HF_MODEL}"
 HEADERS = {"Authorization": f"Bearer {HF_API_TOKEN}"} if USE_HF_API else None
  
+# -----------------------------
+# Sentiment analysis functions
+# -----------------------------
 def analyze_sentiment_hf(text):
+    if not HF_API_TOKEN:
+        return {"positive": 0.0, "neutral": 1.0, "negative": 0.0}
     try:
         response = requests.post(HF_API_URL, headers=HEADERS, json={"inputs": text})
         response.raise_for_status()
         data = response.json()
-        # Multi-class: positive, neutral, negative
-        sentiments = {item['label'].lower(): item['score'] for item in data[0]}
-        return sentiments
+        # Ensure proper structure
+        if isinstance(data, list) and isinstance(data[0], list):
+            sentiments = {item['label'].lower(): item['score'] for item in data[0]}
+            return {
+                "positive": sentiments.get("positive", 0.0),
+                "neutral": sentiments.get("neutral", 0.0),
+                "negative": sentiments.get("negative", 0.0)
+            }
+        else:
+            st.warning("Unexpected HF API response. Using default neutral sentiment.")
+            return {"positive": 0.0, "neutral": 1.0, "negative": 0.0}
     except Exception as e:
-        st.warning(f"Hugging Face API failed: {e}")
+        st.warning(f"Hugging Face API failed: {e}. Using default neutral sentiment.")
         return {"positive": 0.0, "neutral": 1.0, "negative": 0.0}
  
 def analyze_sentiment_local(text):
-    positive_words = ["good", "great", "love", "excellent", "happy"]
-    negative_words = ["bad", "terrible", "hate", "poor", "sad"]
+    positive_words = ["good", "great", "love", "excellent", "happy", "awesome"]
+    negative_words = ["bad", "terrible", "hate", "poor", "sad", "awful"]
     text_lower = text.lower()
     score = sum(word in text_lower for word in positive_words) - sum(word in text_lower for word in negative_words)
     if score > 0:
@@ -41,15 +69,13 @@ def analyze_sentiment_local(text):
         return {"positive": 0.0, "neutral": 1.0, "negative": 0.0}
  
 # -----------------------------
-# Simple keyword extraction (no NLTK)
+# Keyword extraction
 # -----------------------------
 def extract_keywords(text, max_keywords=6):
-    # Remove punctuation and split words
     words = re.findall(r'\b\w+\b', text.lower())
-    # Count frequency ignoring common stopwords
     stopwords = set([
-        "the", "and", "is", "in", "it", "of", "to", "a", "for", "on", "with", "that", "this", "i",
-        "was", "but", "are", "my", "so", "at", "as", "be", "an", "they", "or", "its"
+        "the", "and", "is", "in", "it", "of", "to", "a", "for", "on", "with", "that", "this",
+        "i", "was", "but", "are", "my", "so", "at", "as", "be", "an", "they", "or", "its"
     ])
     filtered_words = [w for w in words if w not in stopwords]
     word_counts = Counter(filtered_words)
@@ -57,12 +83,8 @@ def extract_keywords(text, max_keywords=6):
     return keywords
  
 # -----------------------------
-# Streamlit UI
-# -----------------------------
-st.title("Sentiment Analysis App")
-st.write("Analyze text sentiment and extract keywords without NLTK!")
- 
 # Input: Text or File
+# -----------------------------
 text_input = st.text_area("Enter text here:")
 uploaded_file = st.file_uploader("Or upload a text file", type=["txt"])
  
@@ -72,6 +94,9 @@ if uploaded_file:
 elif text_input:
     texts = [text_input]
  
+# -----------------------------
+# Processing
+# -----------------------------
 if texts:
     results = []
     for t in texts:
@@ -87,4 +112,16 @@ if texts:
  
     df = pd.DataFrame(results)
     st.dataframe(df)
+ 
+    # Download CSV
     st.download_button("Download CSV", df.to_csv(index=False), file_name="sentiment_results.csv")
+ 
+    # -----------------------------
+    # Sentiment distribution chart
+    # -----------------------------
+    st.subheader("Sentiment Distribution")
+    sentiment_totals = df[["Positive", "Neutral", "Negative"]].sum()
+    fig, ax = plt.subplots()
+    ax.bar(sentiment_totals.index, sentiment_totals.values, color=["green", "gray", "red"])
+    ax.set_ylabel("Sum of Scores")
+    st.pyplot(fig)
