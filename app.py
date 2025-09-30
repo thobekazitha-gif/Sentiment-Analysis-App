@@ -1,25 +1,10 @@
 # app.py
 import os
-import tempfile
 import streamlit as st
-from rake_nltk import Rake
-import nltk
 import requests
 import pandas as pd
- 
-# -----------------------------
-# Setup NLTK to work on Streamlit Cloud
-# -----------------------------
-# Use a temporary directory to store NLTK data (Streamlit Cloud safe)
-nltk_data_dir = os.path.join(tempfile.gettempdir(), "nltk_data")
-os.environ["NLTK_DATA"] = nltk_data_dir
- 
-# Ensure required NLTK resources exist
-for resource in ["tokenizers/punkt", "corpora/stopwords"]:
-    try:
-        nltk.data.find(resource)
-    except LookupError:
-        nltk.download(resource.split("/")[1], download_dir=nltk_data_dir)
+import re
+from collections import Counter
  
 # -----------------------------
 # Hugging Face API Setup
@@ -36,6 +21,7 @@ def analyze_sentiment_hf(text):
         response = requests.post(HF_API_URL, headers=HEADERS, json={"inputs": text})
         response.raise_for_status()
         data = response.json()
+        # Multi-class: positive, neutral, negative
         sentiments = {item['label'].lower(): item['score'] for item in data[0]}
         return sentiments
     except Exception as e:
@@ -55,20 +41,26 @@ def analyze_sentiment_local(text):
         return {"positive": 0.0, "neutral": 1.0, "negative": 0.0}
  
 # -----------------------------
-# Keyword Extraction
+# Simple keyword extraction (no NLTK)
 # -----------------------------
-rake_extractor = Rake()  # Will use the NLTK data in nltk_data_dir automatically
- 
 def extract_keywords(text, max_keywords=6):
-    rake_extractor.extract_keywords_from_text(text)
-    keywords = rake_extractor.get_ranked_phrases()[:max_keywords]
+    # Remove punctuation and split words
+    words = re.findall(r'\b\w+\b', text.lower())
+    # Count frequency ignoring common stopwords
+    stopwords = set([
+        "the", "and", "is", "in", "it", "of", "to", "a", "for", "on", "with", "that", "this", "i",
+        "was", "but", "are", "my", "so", "at", "as", "be", "an", "they", "or", "its"
+    ])
+    filtered_words = [w for w in words if w not in stopwords]
+    word_counts = Counter(filtered_words)
+    keywords = [w for w, _ in word_counts.most_common(max_keywords)]
     return keywords
  
 # -----------------------------
 # Streamlit UI
 # -----------------------------
 st.title("Sentiment Analysis App")
-st.write("Analyze text sentiment and extract keywords!")
+st.write("Analyze text sentiment and extract keywords without NLTK!")
  
 # Input: Text or File
 text_input = st.text_area("Enter text here:")
