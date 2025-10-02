@@ -1,206 +1,280 @@
-# app.py - Full Sentiment Analysis Dashboard
+%%writefile Sentiment-Analysis-App/app.py
 import streamlit as st
 import pandas as pd
+from transformers import pipeline
+from rake_nltk import Rake
+from fpdf import FPDF
+import json
 import numpy as np
+from sklearn.metrics import confusion_matrix, accuracy_score, precision_recall_fscore_support, classification_report
 import matplotlib.pyplot as plt
 import seaborn as sns
-from textblob import TextBlob
-from rake_nltk import Rake
-from sklearn.metrics import confusion_matrix, classification_report
-from wordcloud import WordCloud
-import io
 
-# Ensure better visuals
-st.set_page_config(page_title="Sentiment Analysis Dashboard", layout="wide")
-sns.set_style("whitegrid")
+# Load sentiment analysis model
+@st.cache_resource
+def load_model():
+    # Using a local transformer pipeline for multi-class classification
+    return pipeline("sentiment-analysis", model="distilbert/distilbert-base-uncased-finetuned-sst-2-english")
 
-# -----------------------
-# Utility functions
-# -----------------------
-@st.cache_data
-def get_sentiment_label(text: str):
-    if not isinstance(text, str) or text.strip() == "":
-        return "Neutral"
-    blob = TextBlob(text)
-    polarity = blob.sentiment.polarity
-    if polarity > 0.05:
-        return "Positive"
-    elif polarity < -0.05:
-        return "Negative"
-    else:
-        return "Neutral"
+sentiment_analyzer = load_model()
 
-@st.cache_data
-def extract_keywords(text: str, max_keywords=20):
-    rake = Rake()
-    rake.extract_keywords_from_text(text)
-    kws = rake.get_ranked_phrases()
-    return kws[:max_keywords]
-
-def plot_pie_counts(series, title="Sentiment Distribution"):
-    fig, ax = plt.subplots()
-    counts = series.value_counts()
-    counts.plot.pie(autopct='%1.1f%%', colors=['#8BC34A','#F0625F','#90CAF9'], ax=ax)
-    ax.set_ylabel("")
-    ax.set_title(title)
-    return fig
-
-def plot_bar_counts(series, title="Sentiment Counts"):
-    fig, ax = plt.subplots()
-    sns.countplot(x=series, order=["Positive","Neutral","Negative"], palette=['#8BC34A','#90CAF9','#F0625F'], ax=ax)
-    ax.set_title(title)
-    return fig
-
-def make_wordcloud_from_list(words_list, width=800, height=400):
-    joined = " ".join(words_list) if words_list else ""
-    if joined.strip() == "":
+# Function to perform sentiment analysis
+def analyze_sentiment(text):
+    if not text:
         return None
-    wc = WordCloud(width=width, height=height, background_color='white').generate(joined)
-    fig, ax = plt.subplots(figsize=(10,5))
-    ax.imshow(wc, interpolation="bilinear")
-    ax.axis("off")
-    return fig
+    result = sentiment_analyzer(text)[0]
+    # Map labels to positive/negative/neutral if necessary (this model provides positive/negative)
+    # For a neutral class, a different model or custom logic would be needed
+    return {"label": result['label'], "score": result['score']}
 
-def compute_confusion_and_report(true_labels, pred_labels, labels_order=["Positive","Negative","Neutral"]):
-    cm = confusion_matrix(true_labels, pred_labels, labels=labels_order)
-    report = classification_report(true_labels, pred_labels, labels=labels_order, zero_division=0)
-    return cm, report
+# Function to extract keywords
+def extract_keywords(text):
+    if not text:
+        return []
+    r = Rake()
+    r.extract_keywords_from_text(text)
+    return r.get_ranked_phrases()
 
-def to_csv_bytes(df: pd.DataFrame):
-    buffer = io.StringIO()
-    df.to_csv(buffer, index=False)
-    return buffer.getvalue().encode('utf-8')
+# Function for leave-one-out token importance (simplified)
+def get_token_importance(text):
+    words = text.split()
+    original_result = analyze_sentiment(text)
+    if not original_result:
+        return []
 
-# -----------------------
-# App layout
-# -----------------------
-st.title("📊 Sentiment Analysis Dashboard")
-st.write("Enter text to analyze, or upload a CSV with a `text` column. Optional `label` column will enable evaluation metrics.")
+    importance = []
+    for i in range(len(words)):
+        modified_text = " ".join(words[:i] + words[i+1:])
+        if modified_text:
+            modified_result = analyze_sentiment(modified_text)
+            if modified_result:
+                # Simple measure: change in confidence for the original label
+                confidence_change = original_result['score'] - modified_result['score']
+                importance.append((words[i], confidence_change))
+        else:
+             # If removing a word makes the text empty, the importance is high
+             importance.append((words[i], original_result['score']))
 
-tab1, tab2 = st.tabs(["Single Text Analysis", "Dataset Analysis"])
+    # Sort by importance (descending)
+    importance.sort(key=lambda item: item[1], reverse=True)
+    return importance
 
-# -----------------------
-# Single Text Analysis
-# -----------------------
-with tab1:
-    st.header("Analyze a Single Text")
-    user_text = st.text_area("Paste or type text here:", height=160)
+# Function to create PDF
+def create_pdf(data, filename="sentiment_analysis_results.pdf"):
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", size = 12)
+    for item in data:
+        pdf.cell(200, 10, txt = f"Text: {item['text']}", ln = 1, align = 'L')
+        pdf.cell(200, 10, txt = f"Sentiment: {item['sentiment']}", ln = 1, align = 'L')
+        pdf.cell(200, 10, txt = f"Confidence: {item['score']:.2f}", ln = 1, align = 'L')
+        pdf.cell(200, 10, txt = f"Keywords: {', '.join(item.get('keywords', []))}", ln = 1, align = 'L')
+        pdf.cell(200, 10, txt = f"Token Importance (Top 5): {', '.join([f'{word} ({imp:.2f})' for word, imp in item.get('token_importance', [])[:5]])}", ln = 1, align = 'L')
+        pdf.cell(200, 10, txt = "-"*20, ln = 1, align = 'L')
+    pdf.output(filename)
+    return filename
 
-    col1, col2 = st.columns([2,1])
+st.title("Sentiment Analysis Dashboard")
 
-    with col1:
-        if st.button("Analyze Text", key="analyze_single"):
-            if user_text.strip() == "":
-                st.warning("Please enter text to analyze.")
-            else:
-                label = get_sentiment_label(user_text)
-                st.markdown(f"**Sentiment:** :blue[{label}]")
-                polarity = TextBlob(user_text).sentiment.polarity
-                st.markdown(f"**Polarity score:** {polarity:.3f}")
+st.sidebar.header("Input Options")
+input_option = st.sidebar.radio("Select input method:", ("Direct Text Input", "File Upload", "Evaluation Mode"))
 
-                # Extract keywords and show top 10
-                keywords = extract_keywords(user_text, max_keywords=30)
-                if keywords:
-                    st.subheader("Top keywords")
-                    st.write(keywords[:10])
+data = []
+
+if input_option == "Direct Text Input":
+    st.header("Direct Text Input")
+    text_input = st.text_area("Enter text here:")
+    if st.button("Analyze Text"):
+        if text_input:
+            result = analyze_sentiment(text_input)
+            keywords = extract_keywords(text_input)
+            token_importance = get_token_importance(text_input)
+            sentiment_label = result['label']
+            sentiment_score = result['score']
+            st.write(f"Sentiment: {sentiment_label}")
+            st.write(f"Confidence: {sentiment_score:.2f}")
+            st.write(f"Keywords: {', '.join(keywords)}")
+            st.write(f"Token Importance (Top 5): {', '.join([f'{word} ({imp:.2f})' for word, imp in token_importance[:5]])}")
+            data.append({"text": text_input, "sentiment": sentiment_label, "score": sentiment_score, "keywords": keywords, "token_importance": token_importance})
+        else:
+            st.warning("Please enter some text to analyze.")
+
+elif input_option == "File Upload":
+    st.header("File Upload")
+    uploaded_file = st.file_uploader("Upload a text file (.txt, .csv, .json)", type=["txt", "csv", "json"])
+    if uploaded_file is not None:
+        file_type = uploaded_file.type
+        texts = []
+        if file_type == "text/plain":
+            text_data = uploaded_file.getvalue().decode("utf-8")
+            texts = text_data.splitlines()
+        elif file_type == "text/csv":
+            try:
+                df = pd.read_csv(uploaded_file)
+                if 'text' in df.columns:
+                    texts = df['text'].tolist()
+                elif len(df.columns) == 1:
+                     texts = df.iloc[:, 0].tolist()
                 else:
-                    st.write("No keywords found.")
+                    st.error("CSV file must have a 'text' column or be a single column of texts.")
+            except Exception as e:
+                st.error(f"Error reading CSV file: {e}")
+        elif file_type == "application/json":
+            try:
+                json_data = json.load(uploaded_file)
+                if isinstance(json_data, list):
+                    for item in json_data:
+                        if isinstance(item, dict) and 'text' in item:
+                            texts.append(item['text'])
+                        elif isinstance(item, str):
+                             texts.append(item)
+                        else:
+                            st.warning("JSON list should contain objects with a 'text' key or be a list of strings.")
+                else:
+                    st.error("JSON file must be a list of texts or objects with a 'text' key.")
+            except Exception as e:
+                st.error(f"Error reading JSON file: {e}")
 
-                # Wordcloud
-                wc_fig = make_wordcloud_from_list(keywords)
-                if wc_fig:
-                    st.pyplot(wc_fig)
-    with col2:
-        st.info("Quick tips:\n- Short sentences can be ambiguous.\n- TextBlob is rule-based; for advanced models consider transformers (needs more storage).")
+        if texts:
+            st.write(f"Analyzing {len(texts)} lines of text...")
+            batch_results = []
+            # Implement batch processing for efficiency
+            batch_size = st.sidebar.slider("Batch Size", 1, 100, 32)
+            for i in range(0, len(texts), batch_size):
+                batch_texts = texts[i:i+batch_size]
+                results = sentiment_analyzer(batch_texts)
+                for j, text in enumerate(batch_texts):
+                    result = results[j]
+                    keywords = extract_keywords(text)
+                    token_importance = get_token_importance(text)
+                    batch_results.append({"text": text, "sentiment": result['label'], "score": result['score'], "keywords": keywords, "token_importance": token_importance})
+                st.write(f"Processed {min(i + batch_size, len(texts))} of {len(texts)} texts.")
+            data = batch_results
+            st.write("Analysis Complete.")
 
-# -----------------------
-# Dataset Analysis
-# -----------------------
-with tab2:
-    st.header("Batch Dataset Analysis")
-    uploaded = st.file_uploader("Upload CSV file (must contain 'text' column). Optional: 'label' column for evaluation.", type=["csv"])
-
-    if uploaded is None:
-        st.info("No dataset uploaded yet. You can upload a CSV to analyze multiple texts at once.")
-    else:
+elif input_option == "Evaluation Mode":
+    st.header("Evaluation Mode")
+    st.write("Upload a CSV file with 'text' and 'label' columns for evaluation.")
+    uploaded_file = st.file_uploader("Upload CSV file for evaluation", type="csv")
+    if uploaded_file is not None:
         try:
-            df = pd.read_csv(uploaded)
+            eval_df = pd.read_csv(uploaded_file)
+            if 'text' in eval_df.columns and 'label' in eval_df.columns:
+                st.write(f"Analyzing {len(eval_df)} texts for evaluation...")
+                predictions = []
+                # Implement batch processing for efficiency
+                batch_size = st.sidebar.slider("Evaluation Batch Size", 1, 100, 32)
+                for i in range(0, len(eval_df), batch_size):
+                    batch_texts = eval_df['text'].tolist()[i:i+batch_size]
+                    results = sentiment_analyzer(batch_texts)
+                    predictions.extend([r['label'] for r in results])
+                    st.write(f"Processed {min(i + batch_size, len(eval_df))} of {len(eval_df)} texts.")
+
+                eval_df['prediction'] = predictions
+
+                st.header("Evaluation Results")
+
+                # Confusion Matrix
+                st.subheader("Confusion Matrix")
+                cm = confusion_matrix(eval_df['label'], eval_df['prediction'])
+                fig, ax = plt.subplots()
+                sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', ax=ax)
+                st.pyplot(fig)
+
+                # Performance Metrics
+                st.subheader("Performance Metrics")
+                accuracy = accuracy_score(eval_df['label'], eval_df['prediction'])
+                st.write(f"Accuracy: {accuracy:.4f}")
+                report = classification_report(eval_df['label'], eval_df['prediction'], output_dict=True)
+                st.json(report)
+
+                st.header("Generate Evaluation Report")
+                st.write("Use the metrics above to write your evaluation report, discussing model limitations and confidence.")
+                st.text_area("Evaluation Report Template", """
+## Sentiment Analysis Model Evaluation Report
+
+**Model:** [Specify Model Used, e.g., distilbert-base-uncased-finetuned-sst-2-english]
+**Evaluation Data:** [Number of samples]
+
+**Metrics:**
+- Accuracy: [Value]
+- Precision (per class): [Values]
+- Recall (per class): [Values]
+- F1-Score (per class): [Values]
+
+**Confusion Matrix:**
+[Insert Confusion Matrix Interpretation]
+
+**Discussion of Model Limitations:**
+[Discuss limitations based on the confusion matrix and metrics, e.g., issues with specific classes, handling of sarcasm, context, etc.]
+
+**Domain-Specific Issues:**
+[Discuss any challenges or observations related to the specific domain of the evaluation data.]
+
+**Confidence Analysis:**
+[Analyze the confidence scores. Do high confidence scores correlate with correct predictions? Are there patterns in confidence for misclassified examples?]
+
+**Conclusion:**
+[Summarize the evaluation findings and potential next steps.]
+                """)
+
+
         except Exception as e:
-            st.error(f"Could not read CSV file: {e}")
-            df = None
+            st.error(f"Error processing evaluation file: {e}")
 
-        if df is not None:
-            if 'text' not in df.columns:
-                st.error("CSV must contain a 'text' column.")
-            else:
-                st.subheader("Preview data")
-                st.dataframe(df.head())
 
-                # Run sentiment labeling (cached)
-                with st.spinner("Computing sentiment for each row..."):
-                    df['sentiment'] = df['text'].astype(str).apply(get_sentiment_label)
+if data and input_option != "Evaluation Mode":
+    st.header("Analysis Results")
+    results_df = pd.DataFrame(data)
+    st.dataframe(results_df)
 
-                # show counts & charts
-                st.subheader("Sentiment Summary")
-                counts = df['sentiment'].value_counts()
-                st.write(counts)
+    st.header("Sentiment Distribution")
+    sentiment_counts = results_df['sentiment'].value_counts()
+    st.bar_chart(sentiment_counts)
 
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    st.pyplot(plot_pie_counts(df['sentiment']))
-                with col_b:
-                    st.pyplot(plot_bar_counts(df['sentiment']))
+    st.header("Confidence Histogram")
+    fig, ax = plt.subplots()
+    ax.hist(results_df['score'], bins=20)
+    ax.set_xlabel("Confidence Score")
+    ax.set_ylabel("Frequency")
+    st.pyplot(fig)
 
-                # Optional filter by sentiment in sidebar
-                st.sidebar.header("Filters & Export")
-                chosen = st.sidebar.multiselect("Filter by sentiment", options=["Positive","Neutral","Negative"], default=["Positive","Neutral","Negative"])
-                filtered_df = df[df['sentiment'].isin(chosen)]
-                st.sidebar.markdown(f"Showing {len(filtered_df)} rows after filter")
 
-                # Keywords across dataset
-                st.subheader("Keywords (from all texts)")
-                all_keywords = []
-                for txt in df['text'].astype(str).tolist():
-                    kws = extract_keywords(txt, max_keywords=7)
-                    all_keywords.extend(kws)
-                if all_keywords:
-                    wc_fig2 = make_wordcloud_from_list(all_keywords)
-                    if wc_fig2:
-                        st.pyplot(wc_fig2)
-                else:
-                    st.write("No keywords extracted.")
+    st.header("Export Results")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        if st.button("Export as CSV"):
+            csv_file = results_df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="Download CSV",
+                data=csv_file,
+                file_name='sentiment_analysis_results.csv',
+                mime='text/csv',
+            )
+    with col2:
+        if st.button("Export as JSON"):
+            # Exclude token importance from JSON export for simplicity, or format as needed
+            json_data_export = [{"text": item["text"], "sentiment": item["sentiment"], "score": item["score"], "keywords": item.get("keywords", [])} for item in data]
+            json_file = json.dumps(json_data_export, indent=4).encode('utf-8')
+            st.download_button(
+                label="Download JSON",
+                data=json_file,
+                file_name='sentiment_analysis_results.json',
+                mime='application/json',
+            )
+    with col3:
+        if st.button("Export as PDF"):
+            pdf_filename = create_pdf(data)
+            with open(pdf_filename, "rb") as f:
+                pdf_file = f.read()
+            st.download_button(
+                label="Download PDF",
+                data=pdf_file,
+                file_name=pdf_filename,
+                mime='application/pdf',
+            )
 
-                # If label exists, show confusion matrix & classification report
-                if 'label' in df.columns:
-                    st.subheader("Evaluation (using 'label' column)")
-                    # attempt to normalize labels to Positive/Negative/Neutral
-                    # if labels are not in that format, attempt to map using TextBlob heuristics
-                    true_labels = df['label'].astype(str).tolist()
-                    pred_labels = df['sentiment'].astype(str).tolist()
-
-                    # Only include rows where true label is in the expected set or mapable
-                    allowed = ["Positive","Negative","Neutral"]
-                    # If user labels are free text, try mapping them:
-                    def map_label(x):
-                        x = str(x).strip()
-                        if x.lower() in ["pos","positive","p","1","+","plus"]:
-                            return "Positive"
-                        if x.lower() in ["neg","negative","n","-","minus","0"]:
-                            return "Negative"
-                        return "Neutral"
-                    mapped_true = [map_label(x) for x in true_labels]
-
-                    cm, report = compute_confusion_and_report(mapped_true, pred_labels, labels_order=["Positive","Negative","Neutral"])
-                    fig_cm, ax_cm = plt.subplots()
-                    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=["Positive","Negative","Neutral"], yticklabels=["Positive","Negative","Neutral"], ax=ax_cm)
-                    ax_cm.set_xlabel("Predicted")
-                    ax_cm.set_ylabel("Actual")
-                    st.pyplot(fig_cm)
-
-                    st.subheader("Classification Report")
-                    st.text(report)
-
-                # Export analyzed CSV
-                st.subheader("Export")
-                csv_bytes = to_csv_bytes(filtered_df)
-                st.download_button("Download analyzed CSV", data=csv_bytes, file_name="analyzed_sentiment.csv", mime="text/csv")
+st.sidebar.header("Tips for Explainability")
+st.sidebar.info("Analyze individual texts to see the top keywords and token importance scores.")
+st.sidebar.header("Settings")
+# Add any future settings here, e.g., model selection, confidence threshold
