@@ -5,6 +5,14 @@ import json
 import requests
 from typing import List, Dict
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+
+# ---------- Ensure NLTK stopwords are available ----------
+import nltk
+try:
+    nltk.data.find("corpora/stopwords")
+except LookupError:
+    nltk.download("stopwords")
+
 from rake_nltk import Rake
 from lime.lime_text import LimeTextExplainer
 
