@@ -8,10 +8,9 @@ import plotly.express as px
 from fpdf import FPDF
 
 from nlp_utils import (
-    predict_batch_hf,
-    predict_batch_vader,
     extract_keywords_rake,
-    explain_with_lime
+    explain_with_lime,
+    _PredictWrapper
 )
 
 st.set_page_config(page_title="Sentiment Insights", layout="wide")
@@ -36,22 +35,26 @@ with tab1:
         if not txt or not txt.strip():
             st.error("Enter text first.")
         else:
+            wrapper = _PredictWrapper(
+                api_choice="hf" if api_choice.startswith("Hugging Face") else "vader",
+                hf_api_key=hf_api_key
+            )
             try:
-                if api_choice.startswith("Hugging Face") and hf_api_key:
-                    preds = predict_batch_hf([txt], api_key=hf_api_key)
-                else:
-                    preds = predict_batch_vader([txt])
+                preds = wrapper.predict_proba([txt])[0]
+                labels = ["POSITIVE", "NEGATIVE", "NEUTRAL"]
+                max_idx = preds.index(max(preds))
+                st.markdown(f"**Label:** {labels[max_idx]}  \n**Confidence score:** {preds[max_idx]:.3f}")
             except Exception as e:
-                st.error(f"API error: {e}")
-                st.info("Falling back to VADER.")
-                preds = predict_batch_vader([txt])
-            p = preds[0]
-            st.markdown(f"**Label:** {p['label']}  \n**Confidence score:** {p['score']:.3f}")
+                st.error(f"Prediction error: {e}")
+                preds = [0.33, 0.33, 0.33]
+                st.markdown("Falling back to uniform probabilities")
+
             st.markdown("**Keywords (RAKE):**")
             st.write(", ".join(extract_keywords_rake(txt, n=8)))
+
             with st.expander("Show raw probabilities"):
-                st.json(p.get("probs", {}))
-            # explanation
+                st.json({labels[i]: float(preds[i]) for i in range(3)})
+
             with st.expander("Explain prediction (LIME) — may take a few seconds"):
                 try:
                     expl = explain_with_lime(txt, api_choice="hf" if api_choice.startswith("Hugging Face") else "vader", hf_api_key=hf_api_key)
@@ -64,17 +67,13 @@ with tab2:
     uploaded = st.file_uploader("Upload CSV (col named 'text' & optional 'label')", type=["csv"])
     sample_btn = st.button("Load sample 50-row dataset")
     if sample_btn:
-        # create a small synthetic sample if no file
         sample_texts = [
             "The food was delicious and the staff were friendly.",
             "Waited 45 minutes and they got my order wrong — awful service.",
             "Decent value but the portion was small.",
         ]
-        df_sample = pd.DataFrame({
-            "text": sample_texts * 17  # ~51 rows
-        })
-        uploaded_df = df_sample
-        st.session_state["uploaded_df"] = uploaded_df
+        df_sample = pd.DataFrame({"text": sample_texts * 17})  # ~51 rows
+        st.session_state["uploaded_df"] = df_sample
         st.success("Sample loaded into session")
     if uploaded:
         df = pd.read_csv(uploaded)
@@ -82,41 +81,52 @@ with tab2:
             st.error("CSV must contain a 'text' column.")
         else:
             st.session_state["uploaded_df"] = df
+
     if "uploaded_df" in st.session_state:
         df = st.session_state["uploaded_df"]
         st.write(f"Dataset rows: {len(df)}")
         if st.button("Run batch analysis"):
             texts = df["text"].astype(str).tolist()
             results = []
+            wrapper = _PredictWrapper(
+                api_choice="hf" if api_choice.startswith("Hugging Face") else "vader",
+                hf_api_key=hf_api_key
+            )
             for i in range(0, len(texts), batch_size):
                 batch = texts[i:i+batch_size]
                 try:
-                    if api_choice.startswith("Hugging Face") and hf_api_key:
-                        preds = predict_batch_hf(batch, api_key=hf_api_key)
-                    else:
-                        preds = predict_batch_vader(batch)
+                    preds_batch = wrapper.predict_proba(batch)
                 except Exception as e:
-                    st.warning(f"Batch API error: {e} — falling back to VADER for this batch.")
-                    preds = predict_batch_vader(batch)
-                for t, p in zip(batch, preds):
+                    st.warning(f"Batch prediction error: {e} — using uniform fallback")
+                    preds_batch = [[0.33, 0.33, 0.33] for _ in batch]
+
+                labels = ["POSITIVE", "NEGATIVE", "NEUTRAL"]
+                for t, p in zip(batch, preds_batch):
+                    max_idx = p.index(max(p))
                     kws = extract_keywords_rake(t, n=6)
-                    results.append({"text": t, "label": p["label"], "score": p["score"], "probs": json.dumps(p.get("probs", {})), "keywords": ", ".join(kws)})
+                    results.append({
+                        "text": t,
+                        "label": labels[max_idx],
+                        "score": p[max_idx],
+                        "probs": json.dumps({labels[i]: float(p[i]) for i in range(3)}),
+                        "keywords": ", ".join(kws)
+                    })
+
             df_results = pd.DataFrame(results)
             st.session_state["df_results"] = df_results
             st.success("Batch analysis completed")
-    # show results and charts
+
     if "df_results" in st.session_state:
         res = st.session_state["df_results"]
         st.dataframe(res[["text", "label", "score", "keywords"]])
-        # distribution
         dist = res['label'].value_counts().reset_index()
         dist.columns = ["label", "count"]
         fig = px.pie(dist, names='label', values='count', title='Sentiment Distribution')
         st.plotly_chart(fig, use_container_width=True)
-        # downloads
+
         st.download_button("Download CSV", data=res.to_csv(index=False).encode(), file_name="sentiment_results.csv")
         st.download_button("Download JSON", data=res.to_json(orient="records").encode(), file_name="sentiment_results.json")
-        # PDF summary
+
         if st.button("Generate PDF summary (first 50 rows)"):
             pdf = FPDF()
             pdf.add_page()
