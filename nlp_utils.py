@@ -6,12 +6,13 @@ import requests
 from typing import List, Dict
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
-# ---------- Ensure NLTK stopwords are available ----------
+# ---------- Ensure NLTK resources are available ----------
 import nltk
-try:
-    nltk.data.find("corpora/stopwords")
-except LookupError:
-    nltk.download("stopwords")
+for resource in ["stopwords", "punkt"]:
+    try:
+        nltk.data.find(f"corpora/{resource}" if resource=="stopwords" else f"tokenizers/{resource}")
+    except LookupError:
+        nltk.download(resource)
 
 from rake_nltk import Rake
 from lime.lime_text import LimeTextExplainer
@@ -22,12 +23,8 @@ rake = Rake()
 HF_API_URL = "https://api-inference.huggingface.co/models"
 DEFAULT_HF_MODEL = "cardiffnlp/twitter-roberta-base-sentiment-latest"  # change if you prefer
 
-# ---------- Hugging Face Inference call (single text or batch) ----------
+# ---------- Hugging Face Inference call ----------
 def predict_batch_hf(texts: List[str], model: str = DEFAULT_HF_MODEL, api_key: str = None, sleep: float = 0.12) -> List[Dict]:
-    """
-    Calls the Hugging Face Inference API for each text (sequentially).
-    Returns list of {'label':..., 'score':..., 'probs': {...}}
-    """
     if api_key is None:
         raise RuntimeError("Hugging Face API key not provided.")
     headers = {"Authorization": f"Bearer {api_key}"}
@@ -38,7 +35,6 @@ def predict_batch_hf(texts: List[str], model: str = DEFAULT_HF_MODEL, api_key: s
         resp = requests.post(url, headers=headers, json=payload, timeout=30)
         if resp.status_code == 200:
             out = resp.json()
-            # HF returns list of {label, score}
             if isinstance(out, dict) and out.get("error"):
                 raise RuntimeError(out["error"])
             if isinstance(out, list):
@@ -76,17 +72,13 @@ def extract_keywords_rake(text: str, n: int = 6) -> List[str]:
     rake.extract_keywords_from_text(text)
     return rake.get_ranked_phrases()[:n]
 
-# ---------- LIME wrapper for explanations ----------
+# ---------- LIME wrapper ----------
 class _PredictWrapper:
     def __init__(self, api_choice="hf", hf_model=None, hf_api_key=None):
         self.api_choice = api_choice
         self.hf_model = hf_model
         self.hf_api_key = hf_api_key
     def predict_proba(self, texts):
-        """
-        Return probabilities as list-of-lists with consistent class order:
-        [POSITIVE, NEGATIVE, NEUTRAL]
-        """
         if self.api_choice == "hf":
             res = predict_batch_hf(texts, model=self.hf_model or DEFAULT_HF_MODEL, api_key=self.hf_api_key)
             out = []
@@ -106,6 +98,5 @@ def explain_with_lime(text, api_choice="hf", hf_api_key=None, hf_model=None, num
     class_names = ["POSITIVE", "NEGATIVE", "NEUTRAL"]
     explainer = LimeTextExplainer(class_names=class_names)
     wrapper = _PredictWrapper(api_choice=api_choice, hf_model=hf_model, hf_api_key=hf_api_key)
-    exp = explainer.explain_instance(text, wrapper.predict_proba, num_features=num_features, labels=[0])  # label 0 = POSITIVE
-    # returns as list of (token, weight) pairs for POSITIVE label
+    exp = explainer.explain_instance(text, wrapper.predict_proba, num_features=num_features, labels=[0])
     return exp.as_list(label=0)
