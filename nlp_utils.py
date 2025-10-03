@@ -12,7 +12,6 @@ analyzer = SentimentIntensityAnalyzer()
 
 # Simple sentence tokenizer for RAKE to avoid punkt/punkt_tab issues
 def simple_split_sentences(text):
-    # Split on . ! ? followed by space or end of string
     import re
     sentences = re.split(r'(?<=[.!?])\s+', text)
     return [s for s in sentences if s.strip()]
@@ -79,26 +78,39 @@ class _PredictWrapper:
         self.hf_api_key = hf_api_key
 
     def predict_proba(self, texts):
-        out = []
+        """
+        Return probabilities as a 2D list of floats: [[POS, NEG, NEU], ...]
+        """
+        res = []
         if self.api_choice == "hf":
-            res = predict_batch_hf(texts, model=self.hf_model or DEFAULT_HF_MODEL, api_key=self.hf_api_key)
-            for r in res:
+            try:
+                hf_preds = predict_batch_hf(texts, model=self.hf_model or DEFAULT_HF_MODEL, api_key=self.hf_api_key)
+            except Exception as e:
+                hf_preds = predict_batch_vader(texts)
+            for r in hf_preds:
                 probs = r.get("probs", {})
-                out.append([
-                    probs.get("POSITIVE", 0.0),
-                    probs.get("NEGATIVE", 0.0),
-                    probs.get("NEUTRAL", 0.0)
+                # Ensure order POS, NEG, NEU and default 0.0
+                res.append([
+                    float(probs.get("POSITIVE", probs.get("pos", 0.0))),
+                    float(probs.get("NEGATIVE", probs.get("neg", 0.0))),
+                    float(probs.get("NEUTRAL", probs.get("neu", 0.0)))
                 ])
         else:
-            res = predict_batch_vader(texts)
-            for r in res:
-                prob = r.get("probs", {})
-                out.append([prob.get("pos", 0.0), prob.get("neg", 0.0), prob.get("neu", 0.0)])
-        return out
+            vader_preds = predict_batch_vader(texts)
+            for r in vader_preds:
+                probs = r.get("probs", {})
+                res.append([
+                    float(probs.get("pos", 0.0)),
+                    float(probs.get("neg", 0.0)),
+                    float(probs.get("neu", 0.0))
+                ])
+        return res
 
 def explain_with_lime(text, api_choice="hf", hf_api_key=None, hf_model=None, num_features=10):
     class_names = ["POSITIVE", "NEGATIVE", "NEUTRAL"]
     explainer = LimeTextExplainer(class_names=class_names)
     wrapper = _PredictWrapper(api_choice=api_choice, hf_model=hf_model, hf_api_key=hf_api_key)
-    exp = explainer.explain_instance(text, wrapper.predict_proba, num_features=num_features, labels=[0])
+    # labels=[0,1,2] to avoid tuple indexing errors
+    exp = explainer.explain_instance(text, wrapper.predict_proba, num_features=num_features, labels=[0,1,2])
+    # return explanation for POSITIVE only
     return exp.as_list(label=0)
